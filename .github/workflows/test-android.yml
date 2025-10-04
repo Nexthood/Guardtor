@@ -1,0 +1,102 @@
+name: android-apk
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      # Speeds up Gradle/Flutter
+      JAVA_VERSION: "17"
+      FLUTTER_CHANNEL: "stable"
+      FLUTTER_VERSION: "latest"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Install dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Analyze & unit tests (Flutter)
+        working-directory: app
+        run: |
+          flutter analyze
+          flutter test --platform=vm
+
+      # Debug APK (always succeeds without signing)
+      - name: Build debug APK
+        working-directory: app
+        run: flutter build apk --debug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-debug
+          path: app/build/app/outputs/flutter-apk/app-debug.apk
+
+      # Release APK (unsigned by default)
+      - name: Build release APK (unsigned)
+        if: ${{ !secrets.ANDROID_KEYSTORE }}
+        working-directory: app
+        run: flutter build apk --release
+
+      - name: Upload unsigned release APK
+        if: ${{ !secrets.ANDROID_KEYSTORE }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-release-unsigned
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+
+      # 🔐 Signed release APK (optional)
+      - name: Decode keystore from secret
+        if: ${{ secrets.ANDROID_KEYSTORE }}
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 -d > app/android/keystore.jks
+
+      - name: Configure signing
+        if: ${{ secrets.ANDROID_KEYSTORE }}
+        working-directory: app/android
+        run: |
+          # Create key.properties for Gradle signing
+          cat > key.properties <<EOF
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          storeFile=keystore.jks
+          EOF
+
+      - name: Build signed release APK
+        if: ${{ secrets.ANDROID_KEYSTORE }}
+        working-directory: app
+        run: flutter build apk --release
+
+      - name: Upload signed release APK
+        if: ${{ secrets.ANDROID_KEYSTORE }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-release-signed
+          path: app/build/app/outputs/flutter-apk/app-release.apk
